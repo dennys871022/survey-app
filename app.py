@@ -6,22 +6,21 @@ import io
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="專業水準測量系統", page_icon="📐", layout="wide")
 
-# --- CSS 優化 ---
+# --- CSS 優化手機顯示 ---
 st.markdown("""
     <style>
     .block-container { padding-top: 1rem; }
+    button { height: auto; padding-top: 12px !important; padding-bottom: 12px !important; }
     div[data-testid="stMetricValue"] { font-size: 1.1rem; }
-    button { height: auto; padding-top: 10px !important; padding-bottom: 10px !important; }
     </style>
 """, unsafe_allow_html=True)
 
 # --- 2. 核心邏輯函數 ---
 
 def init_state():
-    """初始化 Session State"""
-    # 定義標準欄位，防止 KeyError
-    if 'survey_data' not in st.session_state:
-        st.session_state.survey_data = pd.DataFrame([
+    """初始化 Session State，確保欄位結構正確"""
+    if 'df' not in st.session_state:
+        st.session_state.df = pd.DataFrame([
             {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': 0.0, 'Note': '起點'}
         ])
     if 'survey_type' not in st.session_state:
@@ -32,9 +31,10 @@ def init_state():
         st.session_state.end_h = 0.0
 
 def get_next_name(df, prefix):
-    """智慧命名：A1 -> A2"""
+    """智慧命名：自動偵測上一點編號 (例如 A1 -> A2)"""
     if df.empty: return "A1"
     last = str(df.iloc[-1]['Point'])
+    # 抓取字串結尾的數字
     match = re.search(r'^(.*?)(\d+)$', last)
     if match:
         p = match.group(1)
@@ -44,29 +44,31 @@ def get_next_name(df, prefix):
 
 def calculate_logic(df, start_h):
     """
-    純計算函數：接收 DataFrame，回傳計算後的 DataFrame
+    純計算函數：
+    接收使用者編輯後的 DataFrame，回傳計算完 HI 和 Elev 的 DataFrame
     """
+    # 建立副本以免影響原始數據
     df = df.copy()
     
-    # 1. 確保欄位存在
-    required = ['BS', 'IFS', 'FS', 'HI', 'Elev', 'Point', 'Note']
+    # 1. 確保欄位存在 (防呆)
+    required = ['Point', 'BS', 'IFS', 'FS', 'HI', 'Elev', 'Note']
     for col in required:
         if col not in df.columns:
             df[col] = None
 
-    # 2. 轉型為數字
+    # 2. 轉型為數字 (處理空字串)
     for col in ['BS', 'IFS', 'FS']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     last_hi = None
     
-    # 3. 逐行計算
+    # 3. 逐行計算 (核心測量邏輯)
     for i in range(len(df)):
         bs = df.at[i, 'BS']
         fs = df.at[i, 'FS']
         ifs = df.at[i, 'IFS']
         
-        # 第一點
+        # 第一點 (已知點)
         if i == 0:
             df.at[i, 'Elev'] = start_h
             if pd.notna(bs):
@@ -75,11 +77,12 @@ def calculate_logic(df, start_h):
             else:
                 df.at[i, 'HI'] = None
         else:
-            # 優先轉點 TP
+            # 優先處理轉點 (TP)
             if pd.notna(fs): 
                 if pd.notna(last_hi):
                     elev = last_hi - fs
                     df.at[i, 'Elev'] = elev
+                    
                     if pd.notna(bs):
                         last_hi = elev + bs
                         df.at[i, 'HI'] = last_hi
@@ -89,7 +92,7 @@ def calculate_logic(df, start_h):
                 else:
                     df.at[i, 'Elev'] = None
             
-            # 間視 IFS
+            # 處理間視 (IFS)
             elif pd.notna(ifs):
                 if pd.notna(last_hi):
                     df.at[i, 'Elev'] = last_hi - ifs
@@ -102,15 +105,14 @@ def calculate_logic(df, start_h):
 
     return df
 
-# --- 3. 程式進入點 ---
+# --- 3. 程式主流程 ---
 init_state()
 
 st.title("📐 專業水準測量系統")
 
-# 參數設定
+# 參數設定區
 col1, col2, col3 = st.columns(3)
 with col1:
-    # 直接更新 session_state
     st.session_state.survey_type = st.selectbox(
         "測量類型", 
         ["閉合水準測量", "附合水準測量"], 
@@ -130,17 +132,10 @@ with col3:
             step=0.001, format="%.3f"
         )
 
-# --- 4. 按鈕區 (邏輯重寫：先讀取當前狀態 -> 處理 -> 存回 Session -> Rerun) ---
-c1, c2, c3, c4 = st.columns(4)
-btn_tp = c1.button("➕ 轉點 (TP)", use_container_width=True)
-btn_ifs = c2.button("👁️ 間視 (IFS)", use_container_width=True)
-btn_adj = c3.button("⚖️ 平差計算", use_container_width=True)
-btn_rst = c4.button("🗑️ 重置表格", type="primary", use_container_width=True)
-
-# --- 5. 數據編輯器 (這是關鍵) ---
-# 我們不使用 on_change，而是直接讀取回傳值
+# --- 4. 數據編輯器 (關鍵修正) ---
+# 我們直接顯示 session_state 中的數據
 edited_df = st.data_editor(
-    st.session_state.survey_data,
+    st.session_state.df,
     column_config={
         "BS": st.column_config.NumberColumn("後視 (BS)", format="%.3f"),
         "IFS": st.column_config.NumberColumn("間視 (IFS)", format="%.3f"),
@@ -151,70 +146,72 @@ edited_df = st.data_editor(
         "Note": "備註"
     },
     use_container_width=True,
-    num_rows="dynamic",
-    hide_index=True,
-    key="main_editor" 
+    num_rows="dynamic", # 允許手動刪減行，增加靈活性
+    hide_index=True
 )
 
-# --- 6. 即時計算 ---
-# 每次頁面刷新，都基於最新的編輯結果進行計算
-# 這保證了你輸入數字後，高程會自動跑出來
-final_df = calculate_logic(edited_df, st.session_state.start_h)
+# --- 5. 即時同步與計算 ---
+# 這一步是重點：我們立刻拿使用者剛編輯完的 edited_df 去計算
+# 並將計算結果「存回」session_state。
+# 這樣一來，無論按下什麼按鈕，session_state 裡永遠是「已輸入 + 已計算」的最新狀態。
+calc_df = calculate_logic(edited_df, st.session_state.start_h)
+st.session_state.df = calc_df 
 
-# --- 7. 處理按鈕事件 (在此階段，final_df 包含了使用者最新的輸入) ---
+# --- 6. 按鈕操作區 ---
+c1, c2, c3, c4 = st.columns(4)
 
-if btn_tp:
-    new_name = get_next_name(final_df, "TP")
+# 按鈕邏輯：直接操作已經是最新的 st.session_state.df
+if c1.button("➕ 轉點 (TP)", use_container_width=True):
+    new_name = get_next_name(st.session_state.df, "TP")
     new_row = pd.DataFrame([{'Point': new_name, 'BS': None, 'IFS': None, 'FS': None, 'HI': None, 'Elev': None, 'Note': ''}])
-    # 將計算後的結果加上新的一行，存回 Session
-    st.session_state.survey_data = pd.concat([final_df, new_row], ignore_index=True)
-    st.rerun()
+    st.session_state.df = pd.concat([st.session_state.df, new_row], ignore_index=True)
+    st.rerun() # 重新整理頁面以顯示新行
 
-if btn_ifs:
-    new_name = get_next_name(final_df, "IFS")
+if c2.button("👁️ 間視 (IFS)", use_container_width=True):
+    new_name = get_next_name(st.session_state.df, "IFS")
     new_row = pd.DataFrame([{'Point': new_name, 'BS': None, 'IFS': None, 'FS': None, 'HI': None, 'Elev': None, 'Note': ''}])
-    st.session_state.survey_data = pd.concat([final_df, new_row], ignore_index=True)
+    st.session_state.df = pd.concat([st.session_state.df, new_row], ignore_index=True)
     st.rerun()
 
-if btn_rst:
-    st.session_state.survey_data = pd.DataFrame([
-        {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': st.session_state.start_h, 'Note': '起點'}
-    ])
-    st.rerun()
-
-if btn_adj:
-    # 進行平差邏輯
-    sum_bs = final_df['BS'].sum()
-    sum_fs = final_df['FS'].sum()
+if c3.button("⚖️ 平差計算", use_container_width=True):
+    # 使用當前數據進行平差
+    df = st.session_state.df
+    sum_bs = df['BS'].sum()
+    sum_fs = df['FS'].sum()
     
     if st.session_state.survey_type == "閉合水準測量":
         error = sum_bs - sum_fs
     else:
         error = (sum_bs - sum_fs) - (st.session_state.end_h - st.session_state.start_h)
     
-    bs_indices = final_df[final_df['BS'].notna() & (final_df['BS'] != 0)].index
+    bs_indices = df[df['BS'].notna() & (df['BS'] != 0)].index
     count = len(bs_indices)
     
     if count > 0 and abs(error) > 0.0001:
         correction = -error / count
         for idx in bs_indices:
-            final_df.at[idx, 'BS'] += correction
-            note = str(final_df.at[idx, 'Note']) if pd.notna(final_df.at[idx, 'Note']) else ""
+            df.at[idx, 'BS'] += correction
+            note = str(df.at[idx, 'Note']) if pd.notna(df.at[idx, 'Note']) else ""
             if "[平差]" not in note:
-                final_df.at[idx, 'Note'] = f"{note} [平差{correction:.4f}]"
+                df.at[idx, 'Note'] = f"{note} [平差{correction:.4f}]"
         
-        # 平差後需要再重算一次高程
-        final_df = calculate_logic(final_df, st.session_state.start_h)
-        st.session_state.survey_data = final_df
+        # 平差後需要再重算一次高程並存回
+        st.session_state.df = calculate_logic(df, st.session_state.start_h)
         st.success(f"已平差！總誤差 {error:.4f}m，每站修正 {correction:.4f}m")
         st.rerun()
     else:
         st.warning("無顯著誤差，無需平差")
 
-# --- 8. 底部統計與導出 ---
-# 使用 final_df (已計算版) 來做統計
-total_bs = final_df['BS'].sum()
-total_fs = final_df['FS'].sum()
+if c4.button("🗑️ 重置表格", type="primary", use_container_width=True):
+    st.session_state.df = pd.DataFrame([
+        {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': st.session_state.start_h, 'Note': '起點'}
+    ])
+    st.rerun()
+
+# --- 7. 底部統計與導出 ---
+# 使用 calc_df 確保顯示的是最新計算結果
+total_bs = calc_df['BS'].sum()
+total_fs = calc_df['FS'].sum()
 diff_h = total_bs - total_fs
 
 if st.session_state.survey_type == "閉合水準測量":
@@ -232,7 +229,8 @@ m4.metric("閉合差 (Wh)", f"{closure:.3f}", delta_color="inverse")
 # Excel 導出
 buffer = io.BytesIO()
 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-    final_df.to_excel(writer, index=False, sheet_name='測量數據')
+    # 導出的一定是 calc_df (已計算版)
+    calc_df.to_excel(writer, index=False, sheet_name='測量數據')
     summary_df = pd.DataFrame([
         {'項目': '測量類型', '數值': st.session_state.survey_type},
         {'項目': '起點高程', '數值': st.session_state.start_h},
