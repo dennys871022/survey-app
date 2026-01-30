@@ -6,32 +6,17 @@ import io
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="專業水準測量系統", page_icon="📐", layout="wide")
 
-# --- CSS 優化 ---
 st.markdown("""
     <style>
     .block-container { padding-top: 1rem; }
     button { height: auto; padding-top: 10px !important; padding-bottom: 10px !important; }
+    div[data-testid="stMetricValue"] { font-size: 1.1rem; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 核心邏輯函數 ---
-
-def init_state():
-    """初始化 Session State"""
-    if 'survey_df' not in st.session_state:
-        # 這是我們唯一的「真」資料庫
-        st.session_state.survey_df = pd.DataFrame([
-            {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': 0.0, 'Note': '起點'}
-        ])
-    if 'survey_type' not in st.session_state:
-        st.session_state.survey_type = "閉合水準測量"
-    if 'start_h' not in st.session_state:
-        st.session_state.start_h = 0.0
-    if 'end_h' not in st.session_state:
-        st.session_state.end_h = 0.0
+# --- 2. 核心計算邏輯 (純數學，不牽涉介面) ---
 
 def get_next_name(df, prefix):
-    """智慧命名邏輯"""
     if df.empty: return "A1"
     last = str(df.iloc[-1]['Point'])
     match = re.search(r'^(.*?)(\d+)$', last)
@@ -42,19 +27,21 @@ def get_next_name(df, prefix):
     return f"{prefix}{len(df)+1}"
 
 def calculate_logic(df, start_h):
-    """純計算函數：輸入 DataFrame -> 輸出計算後的 DataFrame"""
+    # 建立副本，避免修改原始資料
     df = df.copy()
     
-    # 防呆與轉型
+    # 強制補齊欄位 (防呆)
     required = ['Point', 'BS', 'IFS', 'FS', 'HI', 'Elev', 'Note']
     for col in required:
         if col not in df.columns: df[col] = None
-            
+    
+    # 轉型為數字
     for col in ['BS', 'IFS', 'FS']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     last_hi = None
     
+    # 逐行計算
     for i in range(len(df)):
         bs = df.at[i, 'BS']
         fs = df.at[i, 'FS']
@@ -91,40 +78,84 @@ def calculate_logic(df, start_h):
                 df.at[i, 'HI'] = None
     return df
 
-# --- 3. 關鍵的回調函數 (Callback) ---
-# 這是解決數據清空的關鍵：在按鈕執行動作前，先強制把編輯器的內容存下來
+# --- 3. 初始化數據 ---
+if 'survey_df' not in st.session_state:
+    st.session_state.survey_df = pd.DataFrame([
+        {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': 0.0, 'Note': '起點'}
+    ])
+if 'survey_type' not in st.session_state:
+    st.session_state.survey_type = "閉合水準測量"
+if 'start_h' not in st.session_state:
+    st.session_state.start_h = 0.0
+if 'end_h' not in st.session_state:
+    st.session_state.end_h = 0.0
 
-def sync_editor_data():
-    """將編輯器當下的內容同步到 session_state"""
-    if "my_editor" in st.session_state:
-        # 從編輯器抓取最新數據
-        current_data = st.session_state["my_editor"]
-        # 立即計算
-        calculated = calculate_logic(current_data, st.session_state.start_h)
-        # 存入真資料庫
-        st.session_state.survey_df = calculated
+# --- 4. 介面佈局 ---
+st.title("📐 專業水準測量系統")
 
-def add_tp_callback():
-    """新增轉點：先同步，再新增"""
-    sync_editor_data() # <--- 關鍵步驟
-    df = st.session_state.survey_df
-    new_name = get_next_name(df, "TP")
+col1, col2, col3 = st.columns(3)
+with col1:
+    # 這裡直接操作 session_state，不使用 callback
+    new_type = st.selectbox("測量類型", ["閉合水準測量", "附合水準測量"], index=0 if st.session_state.survey_type=="閉合水準測量" else 1)
+    if new_type != st.session_state.survey_type:
+        st.session_state.survey_type = new_type
+with col2:
+    new_start = st.number_input("起點高程 (H1)", value=float(st.session_state.start_h), step=0.001, format="%.3f")
+    if new_start != st.session_state.start_h:
+        st.session_state.start_h = new_start
+        # 高程改變時，強制重算並寫回
+        st.session_state.survey_df = calculate_logic(st.session_state.survey_df, new_start)
+with col3:
+    if st.session_state.survey_type == "附合水準測量":
+        new_end = st.number_input("終點高程 (H2)", value=float(st.session_state.end_h), step=0.001, format="%.3f")
+        if new_end != st.session_state.end_h:
+            st.session_state.end_h = new_end
+
+# --- 5. 數據編輯器 (核心) ---
+# 這裡最重要：我們獲取使用者「當下」看到的表格狀態
+edited_df = st.data_editor(
+    st.session_state.survey_df,
+    column_config={
+        "BS": st.column_config.NumberColumn("後視 (BS)", format="%.3f"),
+        "IFS": st.column_config.NumberColumn("間視 (IFS)", format="%.3f"),
+        "FS": st.column_config.NumberColumn("前視 (FS)", format="%.3f"),
+        "HI": st.column_config.NumberColumn("儀器高 (HI)", format="%.3f", disabled=True),
+        "Elev": st.column_config.NumberColumn("高程 (Elev)", format="%.3f", disabled=True),
+        "Point": "測點",
+        "Note": "備註"
+    },
+    use_container_width=True,
+    num_rows="dynamic",
+    hide_index=True
+)
+
+# --- 6. 立即計算 ---
+# 無論是否有按按鈕，每一幀都先算出最新結果
+# 這樣使用者打完字按 Enter，高程就會變
+current_calculated_df = calculate_logic(edited_df, st.session_state.start_h)
+
+# 將這份「最新、已計算」的表格同步回 session，確保它是最新的
+# 這樣按按鈕時，拿到的就是這份數據，不會是舊的
+st.session_state.survey_df = current_calculated_df
+
+# --- 7. 按鈕區 (放在編輯器下方，讀取 current_calculated_df) ---
+c1, c2, c3, c4 = st.columns(4)
+
+# 邏輯：檢查按鈕 -> 拿 current_calculated_df 加上新行 -> 寫入 Session -> Rerun
+if c1.button("➕ 轉點 (TP)", use_container_width=True):
+    new_name = get_next_name(current_calculated_df, "TP")
     new_row = pd.DataFrame([{'Point': new_name, 'BS': None, 'IFS': None, 'FS': None, 'HI': None, 'Elev': None, 'Note': ''}])
-    st.session_state.survey_df = pd.concat([df, new_row], ignore_index=True)
+    st.session_state.survey_df = pd.concat([current_calculated_df, new_row], ignore_index=True)
+    st.rerun()
 
-def add_ifs_callback():
-    """新增間視：先同步，再新增"""
-    sync_editor_data() # <--- 關鍵步驟
-    df = st.session_state.survey_df
-    new_name = get_next_name(df, "IFS")
+if c2.button("👁️ 間視 (IFS)", use_container_width=True):
+    new_name = get_next_name(current_calculated_df, "IFS")
     new_row = pd.DataFrame([{'Point': new_name, 'BS': None, 'IFS': None, 'FS': None, 'HI': None, 'Elev': None, 'Note': ''}])
-    st.session_state.survey_df = pd.concat([df, new_row], ignore_index=True)
+    st.session_state.survey_df = pd.concat([current_calculated_df, new_row], ignore_index=True)
+    st.rerun()
 
-def adjust_callback():
-    """平差：先同步，再計算"""
-    sync_editor_data()
-    df = st.session_state.survey_df
-    
+if c3.button("⚖️ 平差計算", use_container_width=True):
+    df = current_calculated_df
     sum_bs = df['BS'].sum()
     sum_fs = df['FS'].sum()
     
@@ -144,64 +175,21 @@ def adjust_callback():
             if "[平差]" not in note:
                 df.at[idx, 'Note'] = f"{note} [平差{correction:.4f}]"
         
-        # 平差後重算
+        # 平差完再算一次高程
         st.session_state.survey_df = calculate_logic(df, st.session_state.start_h)
         st.success(f"已平差！誤差 {error:.4f}m")
+        st.rerun()
     else:
-        st.warning("無誤差")
+        st.warning("無顯著誤差")
 
-def reset_callback():
+if c4.button("🗑️ 重置表格", type="primary", use_container_width=True):
     st.session_state.survey_df = pd.DataFrame([
         {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': st.session_state.start_h, 'Note': '起點'}
     ])
+    st.rerun()
 
-# --- 4. 主程式渲染 ---
-init_state()
-
-st.title("📐 專業水準測量系統")
-
-# 參數區
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.session_state.survey_type = st.selectbox("測量類型", ["閉合水準測量", "附合水準測量"], index=0 if st.session_state.survey_type=="閉合水準測量" else 1)
-with col2:
-    # 數值改變時，也觸發同步
-    st.session_state.start_h = st.number_input("起點高程 (H1)", value=float(st.session_state.start_h), step=0.001, format="%.3f", on_change=sync_editor_data)
-with col3:
-    if st.session_state.survey_type == "附合水準測量":
-        st.session_state.end_h = st.number_input("終點高程 (H2)", value=float(st.session_state.end_h), step=0.001, format="%.3f", on_change=sync_editor_data)
-
-# 按鈕區 (全部綁定 Callback)
-c1, c2, c3, c4 = st.columns(4)
-c1.button("➕ 轉點 (TP)", on_click=add_tp_callback, use_container_width=True)
-c2.button("👁️ 間視 (IFS)", on_click=add_ifs_callback, use_container_width=True)
-c3.button("⚖️ 平差計算", on_click=adjust_callback, use_container_width=True)
-c4.button("🗑️ 重置表格", on_click=reset_callback, type="primary", use_container_width=True)
-
-# 數據編輯器
-# on_change=sync_editor_data 確保每次輸入完按 Enter 就會立刻計算並存檔
-edited_df = st.data_editor(
-    st.session_state.survey_df,
-    key="my_editor",
-    on_change=sync_editor_data, 
-    column_config={
-        "BS": st.column_config.NumberColumn("後視 (BS)", format="%.3f"),
-        "IFS": st.column_config.NumberColumn("間視 (IFS)", format="%.3f"),
-        "FS": st.column_config.NumberColumn("前視 (FS)", format="%.3f"),
-        "HI": st.column_config.NumberColumn("儀器高 (HI)", format="%.3f", disabled=True),
-        "Elev": st.column_config.NumberColumn("高程 (Elev)", format="%.3f", disabled=True),
-        "Point": "測點",
-        "Note": "備註"
-    },
-    use_container_width=True,
-    hide_index=True,
-    num_rows="dynamic"
-)
-
-# 由於 sync_editor_data 可能已經更新了 session_state，這裡再做一次計算確保顯示最新
-final_df = calculate_logic(edited_df, st.session_state.start_h)
-
-# 底部統計
+# --- 8. 底部統計 ---
+final_df = st.session_state.survey_df
 total_bs = final_df['BS'].sum()
 total_fs = final_df['FS'].sum()
 diff_h = total_bs - total_fs
