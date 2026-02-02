@@ -1,242 +1,317 @@
-import streamlit as st
-import pandas as pd
-import re
-import io
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>專業水準測量系統 (Excel導出版)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
-# --- 1. 頁面設定 ---
-st.set_page_config(page_title="專業水準測量系統", page_icon="📐", layout="wide")
-
-st.markdown("""
     <style>
-    .block-container { padding-top: 1rem; }
-    button { height: auto; padding-top: 10px !important; padding-bottom: 10px !important; }
+        :root { --primary-dark: #1a2a3a; }
+        body { background-color: #f0f2f5; font-family: "Microsoft JhengHei", sans-serif; padding-bottom: 60px; }
+        
+        /* 頂部導航欄 */
+        .header-section { background: var(--primary-dark); color: white; padding: 20px; border-radius: 0 0 15px 15px; margin-bottom: 20px; }
+        
+        /* 表格通用樣式 */
+        .table-container { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.08); }
+        .hi-col { background-color: #f8f9fa !important; color: #0d6efd; font-weight: bold; }
+        .elev-col { background-color: #fff0f5 !important; color: #d63384; font-weight: bold; }
+        .form-control { font-size: 16px; text-align: center; }
+
+        /* --- 手機版 (直式) 特定樣式 --- */
+        @media (max-width: 768px) {
+            .table-responsive {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            table { min-width: 700px; }
+            /* 凍結首欄 */
+            th:first-child, td:first-child {
+                position: sticky; left: 0;
+                background-color: white !important; z-index: 10;
+                border-right: 2px solid #dee2e6;
+                min-width: 80px;
+            }
+            th:first-child { background-color: var(--primary-dark) !important; color: white; }
+            .btn-group-custom { display: flex; flex-wrap: wrap; gap: 5px; }
+        }
+
+        /* --- 電腦版特定樣式 --- */
+        @media (min-width: 769px) {
+            .container-main { max-width: 1300px; margin: auto; padding: 20px; }
+            .form-control { padding: 5px; }
+            .table-responsive { overflow: visible; }
+        }
+
+        /* 底部統計列 */
+        .summary-bar {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: #fff; border-top: 2px solid var(--primary-dark);
+            padding: 10px; z-index: 1000; display: flex;
+            justify-content: space-around; font-weight: bold;
+        }
     </style>
-""", unsafe_allow_html=True)
+</head>
+<body onload="loadSavedData()">
 
-# --- 2. 核心計算邏輯 ---
+<div class="container-main">
+    <div class="header-section shadow">
+        <h3 class="text-center mb-3">專業水準測量紀錄系統</h3>
+        <div class="row g-3">
+            <div class="col-md-3 col-6">
+                <label class="form-label small">測量類型</label>
+                <select id="surveyType" class="form-select" onchange="toggleEndHeight(); saveAllData(); calculate();">
+                    <option value="閉合水準測量">閉合水準測量</option>
+                    <option value="附合水準測量">附合水準測量</option>
+                </select>
+            </div>
+            <div class="col-md-3 col-6">
+                <label class="form-label small">起點高程 (H1)</label>
+                <input type="number" id="startHeight" class="form-control" value="0.000" step="0.001" oninput="calculate(); saveAllData();">
+            </div>
+            <div id="endHeightDiv" class="col-md-3 col-6" style="display:none;">
+                <label class="form-label small text-warning">終點高程 (H2)</label>
+                <input type="number" id="endHeight" class="form-control" value="0.000" step="0.001" oninput="calculate(); saveAllData();">
+            </div>
+        </div>
+    </div>
 
-def get_next_name(df, prefix):
-    if df.empty: return "A1"
-    last = str(df.iloc[-1]['Point'])
-    match = re.search(r'^(.*?)(\d+)$', last)
-    if match:
-        p = match.group(1)
-        n = int(match.group(2))
-        return f"{p}{n+1}"
-    return f"{prefix}{len(df)+1}"
+    <div class="mb-3 btn-group-custom d-flex gap-2">
+        <button class="btn btn-primary" onclick="addRow('TP')">➕ 轉點 (TP)</button>
+        <button class="btn btn-outline-secondary" onclick="addRow('IFS')">👁️ 間視 (IFS)</button>
+        <button class="btn btn-warning fw-bold" onclick="adjustErrors()">⚖️ 平差計算</button>
+        <button class="btn btn-success" onclick="exportToExcel()">💾 導出 Excel</button>
+        <button class="btn btn-link text-danger ms-auto" onclick="resetTable()">全表重置</button>
+    </div>
 
-def calculate_logic(df, start_h):
-    """計算高程的核心邏輯"""
-    # 建立副本，避免修改原始資料
-    df = df.copy()
-    
-    # 1. 補齊欄位 (防呆)
-    required = ['Point', 'BS', 'IFS', 'FS', 'HI', 'Elev', 'Note']
-    for col in required:
-        if col not in df.columns:
-            df[col] = None
+    <div class="table-container shadow-sm">
+        <div class="table-responsive">
+            <table class="table table-bordered align-middle text-center" id="surveyTable">
+                <thead class="table-dark">
+                    <tr>
+                        <th>測點</th>
+                        <th>後視(BS)</th>
+                        <th>間視(IFS)</th>
+                        <th>前視(FS)</th>
+                        <th>儀器高(HI)</th>
+                        <th>高程(Elev)</th>
+                        <th>備註 / 刪除</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
 
-    # 2. 轉型為數字
-    for col in ['BS', 'IFS', 'FS']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+<div class="summary-bar shadow">
+    <div class="text-dark">ΣBS: <span id="sumBS">0.000</span></div>
+    <div class="text-danger">ΣFS: <span id="sumFS">0.000</span></div>
+    <div class="text-primary">誤差Wh: <span id="closureError">0.000</span></div>
+</div>
 
-    last_hi = None
-    
-    # 3. 逐行計算
-    for i in range(len(df)):
-        bs = df.at[i, 'BS']
-        fs = df.at[i, 'FS']
-        ifs = df.at[i, 'IFS']
+<script>
+    // --- 核心邏輯 (與您之前用得最順手的版本完全一致) ---
+
+    function getNextSmartName(type) {
+        const rows = document.querySelectorAll('#tableBody tr');
+        if (rows.length === 0) return "A1";
         
-        # 第一點 (已知點)
-        if i == 0:
-            df.at[i, 'Elev'] = start_h
-            if pd.notna(bs):
-                last_hi = start_h + bs
-                df.at[i, 'HI'] = last_hi
-            else:
-                df.at[i, 'HI'] = None
-        else:
-            # 優先處理轉點 (TP)
-            if pd.notna(fs): 
-                if pd.notna(last_hi):
-                    elev = last_hi - fs
-                    df.at[i, 'Elev'] = elev
-                    
-                    if pd.notna(bs):
-                        last_hi = elev + bs
-                        df.at[i, 'HI'] = last_hi
-                    else:
-                        df.at[i, 'HI'] = None
-                        last_hi = None
-                else:
-                    df.at[i, 'Elev'] = None
-            
-            # 處理間視 (IFS)
-            elif pd.notna(ifs):
-                if pd.notna(last_hi):
-                    df.at[i, 'Elev'] = last_hi - ifs
-                    df.at[i, 'HI'] = None
-                else:
-                    df.at[i, 'Elev'] = None
-            else:
-                df.at[i, 'Elev'] = None
-                df.at[i, 'HI'] = None
-                
-    return df
-
-# --- 3. 初始化 (只執行一次) ---
-if 'survey_df' not in st.session_state:
-    st.session_state.survey_df = pd.DataFrame([
-        {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': 0.0, 'Note': '起點'}
-    ])
-if 'survey_type' not in st.session_state:
-    st.session_state.survey_type = "閉合水準測量"
-if 'start_h' not in st.session_state:
-    st.session_state.start_h = 0.0
-if 'end_h' not in st.session_state:
-    st.session_state.end_h = 0.0
-
-# --- 4. 介面佈局 ---
-st.title("📐 專業水準測量系統")
-
-# 參數區
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.session_state.survey_type = st.selectbox("測量類型", ["閉合水準測量", "附合水準測量"], index=0 if st.session_state.survey_type=="閉合水準測量" else 1)
-with col2:
-    st.session_state.start_h = st.number_input("起點高程 (H1)", step=0.001, format="%.3f", value=st.session_state.start_h)
-with col3:
-    if st.session_state.survey_type == "附合水準測量":
-        st.session_state.end_h = st.number_input("終點高程 (H2)", step=0.001, format="%.3f", value=st.session_state.end_h)
-
-# --- 5. 數據編輯器 (最關鍵的一步) ---
-# 我們獲取使用者「當下」看到的表格，並存入 edited_df
-edited_df = st.data_editor(
-    st.session_state.survey_df,
-    column_config={
-        "BS": st.column_config.NumberColumn("後視 (BS)", format="%.3f"),
-        "IFS": st.column_config.NumberColumn("間視 (IFS)", format="%.3f"),
-        "FS": st.column_config.NumberColumn("前視 (FS)", format="%.3f"),
-        "HI": st.column_config.NumberColumn("儀器高 (HI)", format="%.3f", disabled=True),
-        "Elev": st.column_config.NumberColumn("高程 (Elev)", format="%.3f", disabled=True),
-        "Point": "測點",
-        "Note": "備註"
-    },
-    use_container_width=True,
-    num_rows="dynamic",
-    hide_index=True
-)
-
-# --- 6. 立即計算 ---
-# 無論如何，先拿「眼前看到的數據 (edited_df)」算一遍
-# 這樣就算您只打字不按按鈕，高程也會跳出來
-current_calculated_df = calculate_logic(edited_df, st.session_state.start_h)
-
-# --- 7. 更新 Session State (防止數據丟失的關鍵) ---
-# 我們把算好的結果存回資料庫，這樣如果使用者只是改了 H1 或切換類型，數據也會被保留
-# 但為了避免 Streamlit 的循環更新警告，我們通常讓它自然流動，
-# 只有在「按按鈕」時，我們才強制寫入。
-
-# --- 8. 按鈕區 ---
-c1, c2, c3, c4 = st.columns(4)
-
-# 【重點修正】：
-# 按下按鈕時，我們是拿 current_calculated_df (包含您剛打的字) 來新增一行
-# 然後存回 session_state
-
-if c1.button("➕ 轉點 (TP)", use_container_width=True):
-    new_name = get_next_name(current_calculated_df, "TP")
-    new_row = pd.DataFrame([{'Point': new_name, 'BS': None, 'IFS': None, 'FS': None, 'HI': None, 'Elev': None, 'Note': ''}])
-    
-    # 這裡用 current_calculated_df，所以您剛打的字會被保留
-    st.session_state.survey_df = pd.concat([current_calculated_df, new_row], ignore_index=True)
-    st.rerun()
-
-if c2.button("👁️ 間視 (IFS)", use_container_width=True):
-    new_name = get_next_name(current_calculated_df, "IFS")
-    new_row = pd.DataFrame([{'Point': new_name, 'BS': None, 'IFS': None, 'FS': None, 'HI': None, 'Elev': None, 'Note': ''}])
-    
-    # 同上
-    st.session_state.survey_df = pd.concat([current_calculated_df, new_row], ignore_index=True)
-    st.rerun()
-
-if c3.button("⚖️ 平差計算", use_container_width=True):
-    # 使用 current_calculated_df 來平差
-    df = current_calculated_df
-    sum_bs = df['BS'].sum()
-    sum_fs = df['FS'].sum()
-    
-    if st.session_state.survey_type == "閉合水準測量":
-        error = sum_bs - sum_fs
-    else:
-        error = (sum_bs - sum_fs) - (st.session_state.end_h - st.session_state.start_h)
-    
-    bs_indices = df[df['BS'].notna() & (df['BS'] != 0)].index
-    count = len(bs_indices)
-    
-    if count > 0 and abs(error) > 0.0001:
-        correction = -error / count
-        for idx in bs_indices:
-            df.at[idx, 'BS'] += correction
-            note = str(df.at[idx, 'Note']) if pd.notna(df.at[idx, 'Note']) else ""
-            if "[平差]" not in note:
-                df.at[idx, 'Note'] = f"{note} [平差{correction:.4f}]"
+        const lastRow = rows[rows.length - 1];
+        const lastName = lastRow.querySelector('.pt-name').value;
+        const match = lastName.match(/^(.*?)(\d+)$/);
         
-        # 平差後重算並存回
-        st.session_state.survey_df = calculate_logic(df, st.session_state.start_h)
-        st.success(f"已平差！誤差 {error:.4f}m")
-        st.rerun()
-    else:
-        st.warning("無顯著誤差")
+        if (match) {
+            const prefix = match[1];
+            const number = parseInt(match[2]);
+            return prefix + (number + 1);
+        } else {
+            return type === 'TP' ? 'TP' : 'IFS';
+        }
+    }
 
-if c4.button("🗑️ 重置表格", type="primary", use_container_width=True):
-    st.session_state.survey_df = pd.DataFrame([
-        {'Point': 'BM1', 'BS': 0.0, 'IFS': None, 'FS': None, 'HI': None, 'Elev': st.session_state.start_h, 'Note': '起點'}
-    ])
-    st.rerun()
+    function saveAllData() {
+        const rows = [];
+        document.querySelectorAll('#tableBody tr').forEach(row => {
+            rows.push({
+                type: row.dataset.type,
+                name: row.querySelector('.pt-name').value,
+                bs: row.querySelector('.bs').value,
+                ifs: row.querySelector('.ifs').value,
+                fs: row.querySelector('.fs').value,
+                note: row.querySelector('.note').value
+            });
+        });
+        localStorage.setItem('surveyExcelBackup', JSON.stringify({
+            surveyType: document.getElementById('surveyType').value,
+            startHeight: document.getElementById('startHeight').value,
+            endHeight: document.getElementById('endHeight').value,
+            rows: rows
+        }));
+    }
 
-# 如果沒有按按鈕，但數據有變動（例如使用者只是在表格打字），
-# 我們也需要把 current_calculated_df 存起來，以便下次載入
-# 但為了避免干擾編輯器，我們只在必要時更新
-if not current_calculated_df.equals(st.session_state.survey_df):
-    # 這裡不使用 st.rerun() 避免無限迴圈，只是默默更新後台數據
-    st.session_state.survey_df = current_calculated_df
+    function loadSavedData() {
+        const saved = localStorage.getItem('surveyExcelBackup');
+        if (saved) {
+            const data = JSON.parse(saved);
+            document.getElementById('surveyType').value = data.surveyType;
+            document.getElementById('startHeight').value = data.startHeight;
+            document.getElementById('endHeight').value = data.endHeight;
+            toggleEndHeight();
+            document.getElementById('tableBody').innerHTML = '';
+            data.rows.forEach((r, i) => createRowElement(r.type, i === 0, r));
+            calculate();
+        } else {
+            createRowElement('TP', true);
+        }
+    }
 
-# --- 9. 底部統計與導出 ---
-total_bs = current_calculated_df['BS'].sum()
-total_fs = current_calculated_df['FS'].sum()
-diff_h = total_bs - total_fs
+    function createRowElement(type, isFirst, savedRow = null) {
+        const tbody = document.getElementById('tableBody');
+        const row = document.createElement('tr');
+        row.dataset.type = type;
+        
+        let name = "";
+        if (savedRow) name = savedRow.name;
+        else name = isFirst ? 'BM1' : getNextSmartName(type);
 
-if st.session_state.survey_type == "閉合水準測量":
-    closure = diff_h
-else:
-    closure = diff_h - (st.session_state.end_h - st.session_state.start_h)
+        const bs = savedRow ? savedRow.bs : '';
+        const ifs = savedRow ? savedRow.ifs : '';
+        const fs = savedRow ? savedRow.fs : (isFirst ? '' : '');
+        const note = savedRow ? savedRow.note : '';
 
-st.divider()
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Σ BS", f"{total_bs:.3f}")
-m2.metric("Σ FS", f"{total_fs:.3f}")
-m3.metric("實測高差", f"{diff_h:.3f}")
-m4.metric("閉合差 (Wh)", f"{closure:.3f}", delta_color="inverse")
+        row.innerHTML = `
+            <td><input type="text" class="form-control pt-name" value="${name}" oninput="saveAllData()"></td>
+            <td><input type="number" class="form-control bs" value="${bs}" ${type==='IFS'?'disabled':''} step="0.001" oninput="calculate(); saveAllData();"></td>
+            <td><input type="number" class="form-control ifs" value="${ifs}" ${type==='TP'?'disabled':''} step="0.001" oninput="calculate(); saveAllData();"></td>
+            <td><input type="number" class="form-control fs" value="${fs}" ${isFirst || type==='IFS'?'disabled':''} step="0.001" oninput="calculate(); saveAllData();"></td>
+            <td class="hi-col"></td>
+            <td class="elev-col"></td>
+            <td>
+                <div class="d-flex gap-1">
+                    <input type="text" class="form-control note" value="${note}" placeholder="註" oninput="saveAllData()">
+                    ${isFirst ? '' : `<button class="btn btn-sm btn-outline-danger" onclick="deleteRow(this)">✕</button>`}
+                </div>
+            </td>
+        `;
+        tbody.appendChild(row);
+    }
 
-# Excel 導出
-buffer = io.BytesIO()
-with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-    current_calculated_df.to_excel(writer, index=False, sheet_name='測量數據')
-    summary_df = pd.DataFrame([
-        {'項目': '測量類型', '數值': st.session_state.survey_type},
-        {'項目': '起點高程', '數值': st.session_state.start_h},
-        {'項目': '總後視', '數值': total_bs},
-        {'項目': '總前視', '數值': total_fs},
-        {'項目': '閉合差', '數值': closure}
-    ])
-    summary_df.to_excel(writer, index=False, sheet_name='統計摘要')
+    function addRow(type) { createRowElement(type, false); calculate(); saveAllData(); }
+    
+    function deleteRow(btn) { if(confirm("刪除？")) { btn.closest('tr').remove(); calculate(); saveAllData(); } }
+    
+    function toggleEndHeight() { 
+        const type = document.getElementById('surveyType').value;
+        const div = document.getElementById('endHeightDiv');
+        div.style.display = (type === '附合水準測量') ? 'block' : 'none'; 
+    }
 
-st.download_button(
-    label="💾 下載 Excel 報表",
-    data=buffer.getvalue(),
-    file_name="測量成果.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    use_container_width=True
-)
+    function calculate() {
+        const startH = parseFloat(document.getElementById('startHeight').value) || 0;
+        const endH = parseFloat(document.getElementById('endHeight').value) || 0;
+        const type = document.getElementById('surveyType').value;
+        const rows = document.querySelectorAll('#tableBody tr');
+        let lastHI = 0, totalBS = 0, totalFS = 0, lastElev = startH;
+
+        rows.forEach((row, index) => {
+            const rType = row.dataset.type;
+            const bs = parseFloat(row.querySelector('.bs').value);
+            const fs = parseFloat(row.querySelector('.fs').value);
+            const ifs = parseFloat(row.querySelector('.ifs').value);
+            const hiCell = row.querySelector('.hi-col'), elevCell = row.querySelector('.elev-col');
+
+            if (index === 0) {
+                elevCell.innerText = startH.toFixed(3);
+                if (!isNaN(bs)) { lastHI = startH + bs; hiCell.innerText = lastHI.toFixed(3); totalBS += bs; }
+            } else if (rType === 'TP') {
+                if (!isNaN(fs) && lastHI !== 0) {
+                    lastElev = lastHI - fs; elevCell.innerText = lastElev.toFixed(3); totalFS += fs;
+                    if (!isNaN(bs)) { lastHI = lastElev + bs; hiCell.innerText = lastHI.toFixed(3); totalBS += bs; }
+                    else { hiCell.innerText = ""; lastHI = 0; }
+                } else { elevCell.innerText = ""; hiCell.innerText = ""; }
+            } else if (rType === 'IFS') {
+                if (lastHI !== 0 && !isNaN(ifs)) elevCell.innerText = (lastHI - ifs).toFixed(3);
+                else elevCell.innerText = "";
+            }
+        });
+
+        document.getElementById('sumBS').innerText = totalBS.toFixed(3);
+        document.getElementById('sumFS').innerText = totalFS.toFixed(3);
+        const wh = (type === "閉合水準測量") ? (totalBS - totalFS) : (totalBS - totalFS) - (endH - startH);
+        document.getElementById('closureError').innerText = wh.toFixed(3);
+    }
+
+    function adjustErrors() {
+        const wh = parseFloat(document.getElementById('closureError').innerText);
+        const bsInputs = Array.from(document.querySelectorAll('.bs:not([disabled])')).filter(i => i.value !== "");
+        if (bsInputs.length === 0 || Math.abs(wh) < 0.0001) return alert("無誤差");
+        if (confirm(`誤差 ${wh.toFixed(3)}m，確定平差？`)) {
+            const corr = (-wh) / bsInputs.length;
+            bsInputs.forEach(input => {
+                input.value = (parseFloat(input.value) + corr).toFixed(4);
+                input.closest('tr').querySelector('.note').value = `[平差]${corr.toFixed(4)}`;
+            });
+            calculate(); saveAllData();
+        }
+    }
+
+    // --- 新增：真正的 Excel (.xlsx) 導出功能 ---
+    function exportToExcel() {
+        // 1. 準備數據陣列 (Array of Arrays)
+        const surveyType = document.getElementById('surveyType').value;
+        const sH = document.getElementById('startHeight').value;
+        const eH = document.getElementById('endHeight').value;
+        const sumBS = document.getElementById('sumBS').innerText;
+        const sumFS = document.getElementById('sumFS').innerText;
+        const wh = document.getElementById('closureError').innerText;
+
+        // 表頭
+        let data = [['測點', '後視 (BS)', '間視 (IFS)', '前視 (FS)', '儀器高 (HI)', '高程 (Elev)', '備註']];
+
+        // 收集表格內容
+        document.querySelectorAll('#tableBody tr').forEach(row => {
+            const rowData = [
+                row.querySelector('.pt-name').value,
+                row.querySelector('.bs').value,
+                row.querySelector('.ifs').value,
+                row.querySelector('.fs').value,
+                row.querySelector('.hi-col').innerText,
+                row.querySelector('.elev-col').innerText,
+                row.querySelector('.note').value
+            ];
+            data.push(rowData);
+        });
+
+        // 插入空行
+        data.push([]);
+        
+        // 插入摘要統計
+        data.push(['[測量摘要]']);
+        data.push(['測量類型', surveyType]);
+        data.push(['起點高程', sH]);
+        if(surveyType === '附合水準測量') {
+            data.push(['終點高程', eH]);
+        }
+        data.push(['總後視 (ΣBS)', sumBS]);
+        data.push(['總前視 (ΣFS)', sumFS]);
+        data.push(['閉合差 (Wh)', wh]);
+
+        // 2. 建立工作表 (Worksheet)
+        const ws = XLSX.utils.aoa_to_sheet(data);
+
+        // 3. 建立工作簿 (Workbook)
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "測量數據");
+
+        // 4. 寫入檔案並下載 (檔名包含時間戳記)
+        const date = new Date().toISOString().slice(0,10);
+        XLSX.writeFile(wb, `水準測量成果_${date}.xlsx`);
+    }
+
+    function resetTable() { if(confirm("確定清空所有資料？")) { localStorage.removeItem('surveyExcelBackup'); location.reload(); } }
+</script>
+</body>
+</html>
