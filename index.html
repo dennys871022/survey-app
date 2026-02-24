@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>專業水準測量系統 (Excel導出版)</title>
+    <title>專業水準測量系統 (獨立平差欄版)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
@@ -11,23 +11,16 @@
         :root { --primary-dark: #1a2a3a; }
         body { background-color: #f0f2f5; font-family: "Microsoft JhengHei", sans-serif; padding-bottom: 60px; }
         
-        /* 頂部導航欄 */
         .header-section { background: var(--primary-dark); color: white; padding: 20px; border-radius: 0 0 15px 15px; margin-bottom: 20px; }
-        
-        /* 表格通用樣式 */
         .table-container { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.08); }
         .hi-col { background-color: #f8f9fa !important; color: #0d6efd; font-weight: bold; }
         .elev-col { background-color: #fff0f5 !important; color: #d63384; font-weight: bold; }
+        .adj-col { color: #198754; font-weight: bold; font-size: 0.9em; vertical-align: middle; }
         .form-control { font-size: 16px; text-align: center; }
 
-        /* --- 手機版 (直式) 特定樣式 --- */
         @media (max-width: 768px) {
-            .table-responsive {
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
-            }
-            table { min-width: 700px; }
-            /* 凍結首欄 */
+            .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            table { min-width: 750px; }
             th:first-child, td:first-child {
                 position: sticky; left: 0;
                 background-color: white !important; z-index: 10;
@@ -38,14 +31,12 @@
             .btn-group-custom { display: flex; flex-wrap: wrap; gap: 5px; }
         }
 
-        /* --- 電腦版特定樣式 --- */
         @media (min-width: 769px) {
             .container-main { max-width: 1300px; margin: auto; padding: 20px; }
             .form-control { padding: 5px; }
             .table-responsive { overflow: visible; }
         }
 
-        /* 底部統計列 */
         .summary-bar {
             position: fixed; bottom: 0; left: 0; right: 0;
             background: #fff; border-top: 2px solid var(--primary-dark);
@@ -97,6 +88,7 @@
                         <th>前視(FS)</th>
                         <th>儀器高(HI)</th>
                         <th>高程(Elev)</th>
+                        <th>平差</th>
                         <th>備註 / 刪除</th>
                     </tr>
                 </thead>
@@ -113,8 +105,6 @@
 </div>
 
 <script>
-    // --- 核心邏輯 (與您之前用得最順手的版本完全一致) ---
-
     function getNextSmartName(type) {
         const rows = document.querySelectorAll('#tableBody tr');
         if (rows.length === 0) return "A1";
@@ -141,6 +131,7 @@
                 bs: row.querySelector('.bs').value,
                 ifs: row.querySelector('.ifs').value,
                 fs: row.querySelector('.fs').value,
+                adj: row.querySelector('.adj-col').innerText,
                 note: row.querySelector('.note').value
             });
         });
@@ -180,6 +171,7 @@
         const bs = savedRow ? savedRow.bs : '';
         const ifs = savedRow ? savedRow.ifs : '';
         const fs = savedRow ? savedRow.fs : (isFirst ? '' : '');
+        const adj = savedRow && savedRow.adj ? savedRow.adj : '';
         const note = savedRow ? savedRow.note : '';
 
         row.innerHTML = `
@@ -189,6 +181,7 @@
             <td><input type="number" class="form-control fs" value="${fs}" ${isFirst || type==='IFS'?'disabled':''} step="0.001" oninput="calculate(); saveAllData();"></td>
             <td class="hi-col"></td>
             <td class="elev-col"></td>
+            <td class="adj-col">${adj}</td>
             <td>
                 <div class="d-flex gap-1">
                     <input type="text" class="form-control note" value="${note}" placeholder="註" oninput="saveAllData()">
@@ -252,15 +245,15 @@
             const corr = (-wh) / bsInputs.length;
             bsInputs.forEach(input => {
                 input.value = (parseFloat(input.value) + corr).toFixed(4);
-                input.closest('tr').querySelector('.note').value = `[平差]${corr.toFixed(4)}`;
+                
+                const adjCell = input.closest('tr').querySelector('.adj-col');
+                adjCell.innerText = corr > 0 ? `+${corr.toFixed(4)}` : corr.toFixed(4);
             });
             calculate(); saveAllData();
         }
     }
 
-    // --- 新增：真正的 Excel (.xlsx) 導出功能 ---
     function exportToExcel() {
-        // 1. 準備數據陣列 (Array of Arrays)
         const surveyType = document.getElementById('surveyType').value;
         const sH = document.getElementById('startHeight').value;
         const eH = document.getElementById('endHeight').value;
@@ -268,10 +261,8 @@
         const sumFS = document.getElementById('sumFS').innerText;
         const wh = document.getElementById('closureError').innerText;
 
-        // 表頭
-        let data = [['測點', '後視 (BS)', '間視 (IFS)', '前視 (FS)', '儀器高 (HI)', '高程 (Elev)', '備註']];
+        let data = [['測點', '後視 (BS)', '間視 (IFS)', '前視 (FS)', '儀器高 (HI)', '高程 (Elev)', '平差', '備註']];
 
-        // 收集表格內容
         document.querySelectorAll('#tableBody tr').forEach(row => {
             const rowData = [
                 row.querySelector('.pt-name').value,
@@ -280,15 +271,14 @@
                 row.querySelector('.fs').value,
                 row.querySelector('.hi-col').innerText,
                 row.querySelector('.elev-col').innerText,
+                row.querySelector('.adj-col').innerText,
                 row.querySelector('.note').value
             ];
             data.push(rowData);
         });
 
-        // 插入空行
         data.push([]);
         
-        // 插入摘要統計
         data.push(['[測量摘要]']);
         data.push(['測量類型', surveyType]);
         data.push(['起點高程', sH]);
@@ -299,14 +289,10 @@
         data.push(['總前視 (ΣFS)', sumFS]);
         data.push(['閉合差 (Wh)', wh]);
 
-        // 2. 建立工作表 (Worksheet)
         const ws = XLSX.utils.aoa_to_sheet(data);
-
-        // 3. 建立工作簿 (Workbook)
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "測量數據");
 
-        // 4. 寫入檔案並下載 (檔名包含時間戳記)
         const date = new Date().toISOString().slice(0,10);
         XLSX.writeFile(wb, `水準測量成果_${date}.xlsx`);
     }
