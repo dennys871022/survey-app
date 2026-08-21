@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>專業水準測量系統 (平差前後摘要版)</title>
+    <title>專業水準測量系統 (新增設計高差)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 
@@ -15,12 +15,13 @@
         .table-container { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.08); }
         .hi-col { background-color: #f8f9fa !important; color: #0d6efd; font-weight: bold; }
         .elev-col { background-color: #fff0f5 !important; color: #d63384; font-weight: bold; }
+        .diff-col { color: #fd7e14; font-weight: bold; background-color: #fff8f0 !important; }
         .adj-col { color: #198754; font-weight: bold; font-size: 0.9em; vertical-align: middle; }
         .form-control { font-size: 16px; text-align: center; }
 
         @media (max-width: 768px) {
             .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-            table { min-width: 750px; }
+            table { min-width: 820px; }
             th:first-child, td:first-child {
                 position: sticky; left: 0;
                 background-color: white !important; z-index: 10;
@@ -62,6 +63,10 @@
                 <label class="form-label small">起點高程 (H1)</label>
                 <input type="number" id="startHeight" class="form-control" value="0.000" step="0.001" oninput="calculate(); saveAllData();">
             </div>
+            <div class="col-md-3 col-6">
+                <label class="form-label small">設計高程 (m)</label>
+                <input type="number" id="designHeight" class="form-control border-info" placeholder="例: 9.63" step="0.001" oninput="calculate(); saveAllData();">
+            </div>
             <div id="endHeightDiv" class="col-md-3 col-6" style="display:none;">
                 <label class="form-label small text-warning">終點高程 (H2)</label>
                 <input type="number" id="endHeight" class="form-control" value="0.000" step="0.001" oninput="calculate(); saveAllData();">
@@ -88,6 +93,7 @@
                         <th>前視(FS)</th>
                         <th>儀器高(HI)</th>
                         <th>高程(Elev)</th>
+                        <th>高差(cm)</th>
                         <th>平差</th>
                         <th>備註 / 刪除</th>
                     </tr>
@@ -138,6 +144,7 @@
         localStorage.setItem('surveyExcelBackup', JSON.stringify({
             surveyType: document.getElementById('surveyType').value,
             startHeight: document.getElementById('startHeight').value,
+            designHeight: document.getElementById('designHeight').value,
             endHeight: document.getElementById('endHeight').value,
             rows: rows
         }));
@@ -149,6 +156,7 @@
             const data = JSON.parse(saved);
             document.getElementById('surveyType').value = data.surveyType;
             document.getElementById('startHeight').value = data.startHeight;
+            if (data.designHeight !== undefined) document.getElementById('designHeight').value = data.designHeight;
             document.getElementById('endHeight').value = data.endHeight;
             toggleEndHeight();
             document.getElementById('tableBody').innerHTML = '';
@@ -181,6 +189,7 @@
             <td><input type="number" class="form-control fs" value="${fs}" ${isFirst || type==='IFS'?'disabled':''} step="0.001" oninput="calculate(); saveAllData();"></td>
             <td class="hi-col"></td>
             <td class="elev-col"></td>
+            <td class="diff-col"></td>
             <td class="adj-col">${adj}</td>
             <td>
                 <div class="d-flex gap-1">
@@ -205,6 +214,7 @@
     function calculate() {
         const startH = parseFloat(document.getElementById('startHeight').value) || 0;
         const endH = parseFloat(document.getElementById('endHeight').value) || 0;
+        const designH = parseFloat(document.getElementById('designHeight').value);
         const type = document.getElementById('surveyType').value;
         const rows = document.querySelectorAll('#tableBody tr');
         let lastHI = 0, totalBS = 0, totalFS = 0, lastElev = startH;
@@ -214,20 +224,37 @@
             const bs = parseFloat(row.querySelector('.bs').value);
             const fs = parseFloat(row.querySelector('.fs').value);
             const ifs = parseFloat(row.querySelector('.ifs').value);
-            const hiCell = row.querySelector('.hi-col'), elevCell = row.querySelector('.elev-col');
+            const hiCell = row.querySelector('.hi-col');
+            const elevCell = row.querySelector('.elev-col');
+            const diffCell = row.querySelector('.diff-col');
+            
+            let currentElev = null;
 
             if (index === 0) {
+                currentElev = startH;
                 elevCell.innerText = startH.toFixed(3);
                 if (!isNaN(bs)) { lastHI = startH + bs; hiCell.innerText = lastHI.toFixed(3); totalBS += bs; }
             } else if (rType === 'TP') {
                 if (!isNaN(fs) && lastHI !== 0) {
-                    lastElev = lastHI - fs; elevCell.innerText = lastElev.toFixed(3); totalFS += fs;
+                    lastElev = lastHI - fs; 
+                    currentElev = lastElev;
+                    elevCell.innerText = lastElev.toFixed(3); totalFS += fs;
                     if (!isNaN(bs)) { lastHI = lastElev + bs; hiCell.innerText = lastHI.toFixed(3); totalBS += bs; }
                     else { hiCell.innerText = ""; lastHI = 0; }
                 } else { elevCell.innerText = ""; hiCell.innerText = ""; }
             } else if (rType === 'IFS') {
-                if (lastHI !== 0 && !isNaN(ifs)) elevCell.innerText = (lastHI - ifs).toFixed(3);
+                if (lastHI !== 0 && !isNaN(ifs)) {
+                    currentElev = lastHI - ifs;
+                    elevCell.innerText = currentElev.toFixed(3);
+                }
                 else elevCell.innerText = "";
+            }
+
+            if (currentElev !== null && !isNaN(designH)) {
+                let diff = (currentElev - designH) * 100;
+                diffCell.innerText = diff > 0 ? `+${diff.toFixed(1)}` : diff.toFixed(1);
+            } else {
+                diffCell.innerText = "";
             }
         });
 
@@ -257,12 +284,13 @@
         const surveyType = document.getElementById('surveyType').value;
         const sH = parseFloat(document.getElementById('startHeight').value) || 0;
         const eH = parseFloat(document.getElementById('endHeight').value) || 0;
+        const dH = document.getElementById('designHeight').value;
 
         let currentSumBS = 0;
         let currentSumFS = 0;
         let totalAdj = 0;
 
-        let data = [['測點', '後視 (BS)', '間視 (IFS)', '前視 (FS)', '儀器高 (HI)', '高程 (Elev)', '平差', '備註']];
+        let data = [['測點', '後視 (BS)', '間視 (IFS)', '前視 (FS)', '儀器高 (HI)', '高程 (Elev)', '高差(cm)', '平差', '備註']];
 
         document.querySelectorAll('#tableBody tr').forEach(row => {
             const bsVal = parseFloat(row.querySelector('.bs').value) || 0;
@@ -280,13 +308,13 @@
                 row.querySelector('.fs').value,
                 row.querySelector('.hi-col').innerText,
                 row.querySelector('.elev-col').innerText,
+                row.querySelector('.diff-col').innerText,
                 row.querySelector('.adj-col').innerText,
                 row.querySelector('.note').value
             ];
             data.push(rowData);
         });
 
-        // 計算平差前數據
         const preSumBS = currentSumBS - totalAdj;
         const preSumFS = currentSumFS;
         
@@ -305,9 +333,8 @@
         data.push(['[測量摘要]']);
         data.push(['測量類型', surveyType]);
         data.push(['起點高程', sH.toFixed(3)]);
-        if(surveyType === '附合水準測量') {
-            data.push(['終點高程', eH.toFixed(3)]);
-        }
+        if(dH !== "") data.push(['設計高程', dH]);
+        if(surveyType === '附合水準測量') data.push(['終點高程', eH.toFixed(3)]);
         
         data.push([]);
         data.push(['[平差前]']);
